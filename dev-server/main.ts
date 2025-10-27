@@ -1,6 +1,6 @@
 import * as FS from "fs";
 import * as Path from "path";
-import MantleRenderer, { formatSkin, ServerPlatformUtils } from "../src/Index.js";
+import MantleRenderer, { ServerPlatformUtils } from "../src/Index.js";
 import GL from "gl";
 import Canvas from "canvas";
 
@@ -17,10 +17,10 @@ const renderer = new MantleRenderer({
         color: 0xffffff
     },
     player: {
-        onSkinLoad: () => {
+        onSkinLoad: async () => {
             console.log("skin loaded!");
             renderer.render(0);
-            const imageB64 = renderer.screenshot(1000, 1000, "png", 5);
+            const imageB64 = renderer.screenshot(1024, 1024, "png", 4);
             const image = imageB64.split(",", 2)[1];
             FS.writeFileSync(imagePath, Buffer.from(image, "base64"));
             console.log("Saved screenshot to 'test.png'");

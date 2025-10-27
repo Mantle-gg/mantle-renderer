@@ -1,6 +1,6 @@
 {
   "name": "mantle-renderer",
-  "version": "1.6.4",
+  "version": "1.6.5",
   "description": "A Minecraft-focused WebGL powered 3D renderer built for both the browser and server.",
   "main": "cjs/Index.js",
   "type": "module",
@@ -33,6 +33,7 @@
   "license": "MIT",
   "devDependencies": {
     "@types/gl": "^6.0.2",
+    "@types/node": "^24.9.1",
     "@types/three": "^0.152.0",
     "chalk": "^5.2.0",
     "rimraf": "^5.0.1",

@@ -1,4 +1,4 @@
-import { AmbientLight, FloatType, LinearFilter, NoToneMapping, Object3D, PCFSoftShadowMap, PerspectiveCamera, PointLight, RGBAFormat, SRGBColorSpace, Scene, UnsignedByteType, Vector2, WebGLRenderTarget, WebGLRenderer } from "three";
+import { AmbientLight, FloatType, LinearFilter, LinearMipMapLinearFilter, Mesh, NoToneMapping, Object3D, OrthographicCamera, PCFSoftShadowMap, PerspectiveCamera, PlaneGeometry, PointLight, RGBAFormat, SRGBColorSpace, Scene, ShaderMaterial, UnsignedByteType, Vector2, WebGLRenderTarget, WebGLRenderer } from "three";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
@@ -287,79 +287,121 @@ export class MantleRenderer {
         return this.camera;
     }
 
-    
-
-    // Anti-Aliasing is patchy client-side, uasge of this is only encouraged for server-side rendering. Client side applications can just .toDataURL() the canvas.
     public screenshot(width: number, height: number, mimeType: "png" | "jpeg", superSampling?: number) {
+
+        const isPowerOfTwo = (n: number) => n > 0 && (n & (n - 1)) === 0;
+    
         superSampling = Math.max(Math.round(superSampling || 1), 1);
-
-        width *= superSampling;
-        height *= superSampling;
-
-        const cameraAspect = this.camera.aspect;
-        this.camera.aspect = width / height;
-        this.camera.updateProjectionMatrix();
-
-        const canvas = this.platformUtils.create3dCanvas(width, height);
-        const renderer = new WebGLRenderer({
-            canvas: canvas as unknown as HTMLCanvasElement,
-            alpha: true,
-            powerPreference: "high-performance",
-            antialias: true,
-            context: canvas.getContext("3d")
-        });
-        renderer.shadowMap.enabled = true;
-        renderer.shadowMap.type = PCFSoftShadowMap;
-
-        const renderTarget = new WebGLRenderTarget(width, height, {
-            minFilter: LinearFilter,
-            magFilter: LinearFilter,
-            format: RGBAFormat,
-            type: UnsignedByteType
-        });
-        renderer.setRenderTarget(renderTarget);
-        renderer.render(this.scene, this.camera);
         
-
-        const frameBufferPixels = new Uint8Array(width * height * 4);
-        const context = renderer.getContext();
-        context.readPixels(0, 0, width, height, context.RGBA, context.UNSIGNED_BYTE, frameBufferPixels);
-
-        const pixels = new Uint8Array(width * height * 4);
-        for (let fbRow = 0; fbRow < height; fbRow++) {
-            let rowData = frameBufferPixels.subarray(fbRow * width * 4, (fbRow + 1) * width * 4);
-            let imgRow = height - fbRow - 1;
-            pixels.set(rowData, imgRow * width * 4);
+        if (superSampling > 1 && (!isPowerOfTwo(superSampling) || !isPowerOfTwo(width) || !isPowerOfTwo(height))) {
+            throw new Error("With WebGL 1, super-sampling is only supported when SS factor and resolution are powers of two.");
         }
+    
+        const superSampledWidth = width * superSampling;
+        const superSampledHeight = height * superSampling;
+        const cameraAspect = this.camera.aspect;
+    
+        let renderer: WebGLRenderer | null = null;
+        let sceneRenderTarget: WebGLRenderTarget | null = null;
+        let finalRenderTarget: WebGLRenderTarget | null = null;
+        let postMaterial: ShaderMaterial | null = null;
+        let postPlane: PlaneGeometry | null = null;
+        let canvas2d: any = null;
+    
+        try {
+            const postCamera = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
+            postMaterial = new ShaderMaterial({
+                uniforms: { tDiffuse: { value: null } },
+                vertexShader: `
+                    varying vec2 vUv;
+                    void main() {
+                        vUv = uv;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    varying vec2 vUv;
+                    uniform sampler2D tDiffuse;
+                    void main() {
+                        gl_FragColor = texture2D(tDiffuse, vec2(vUv.x, 1.0 - vUv.y));
+                    }
+                `
+            });
+            postPlane = new PlaneGeometry(2, 2);
+            const postQuad = new Mesh(postPlane, postMaterial);
+            const postScene = new Scene();
+            postScene.add(postQuad);
+    
+            this.camera.aspect = superSampledWidth / superSampledHeight;
+            this.camera.updateProjectionMatrix();
+    
+            const canvas = this.platformUtils.create3dCanvas(superSampledWidth, superSampledHeight);
+            renderer = new WebGLRenderer({
+                canvas: canvas as unknown as HTMLCanvasElement,
+                alpha: true,
+                powerPreference: "high-performance",
+                antialias: true,
+                context: canvas.getContext("3d")
+            });
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = PCFSoftShadowMap;
+    
+            sceneRenderTarget = new WebGLRenderTarget(superSampledWidth, superSampledHeight, {
+                minFilter: LinearMipMapLinearFilter,
+                magFilter: LinearFilter,
+                format: RGBAFormat,
+                type: UnsignedByteType,
+            });
+            sceneRenderTarget.texture.generateMipmaps = true;
+    
+            finalRenderTarget = new WebGLRenderTarget(width, height, {
+                minFilter: LinearFilter,
+                magFilter: LinearFilter,
+                format: RGBAFormat,
+                type: UnsignedByteType
+            });
+    
+            renderer.setRenderTarget(sceneRenderTarget);
+            renderer.render(this.scene, this.camera);
 
-        const canvas2d = this.platformUtils.create2dCanvas(width, height) as any;
-        const ctx = canvas2d.getContext("2d");
-        const imageData = ctx.createImageData(width, height);
-        imageData.data.set(pixels);
-        ctx.putImageData(imageData, 0, 0);
-
-
-
-        this.camera.aspect = cameraAspect;
-        this.camera.updateProjectionMatrix();
-
-        try { // renderer dispose fails if server-side but still cleans up
-            renderer.dispose();
-        } catch {}
-        renderTarget.dispose();
-
-        if (superSampling > 1) {
-            const originalWidth = width / superSampling;
-            const originalHeight = height / superSampling;
-
-            const shrinkCanvas = this.platformUtils.create2dCanvas(originalWidth, originalHeight) as Canvas;
-            const ctx = shrinkCanvas.getContext("2d");
-            ctx.drawImage(canvas2d, 0, 0, originalWidth, originalHeight);
-            var base64 = shrinkCanvas.toDataURL(("image/" + mimeType) as any);
-        } else {
-            var base64 = canvas2d.toDataURL("image/" + mimeType) as string;
+            postMaterial.uniforms.tDiffuse.value = sceneRenderTarget.texture;
+            renderer.setRenderTarget(finalRenderTarget);
+            renderer.render(postScene, postCamera);
+    
+            const finalPixels = new Uint8Array(width * height * 4);
+            renderer.readRenderTargetPixels(finalRenderTarget, 0, 0, width, height, finalPixels);
+    
+            canvas2d = this.platformUtils.create2dCanvas(width, height) as any;
+            const ctx = canvas2d.getContext("2d");
+            const imageData = ctx.createImageData(width, height);
+    
+            imageData.data.set(finalPixels);
+            ctx.putImageData(imageData, 0, 0);
+    
+            const base64 = canvas2d.toDataURL("image/" + mimeType) as string;
+            return base64;
+    
+        } finally {
+            this.camera.aspect = cameraAspect;
+            this.camera.updateProjectionMatrix();
+    
+            if (renderer) {
+                try {
+                    renderer.dispose();
+                } catch {}
+            }
+            if (sceneRenderTarget) {
+                sceneRenderTarget.dispose();
+            }
+            if (finalRenderTarget) {
+                finalRenderTarget.dispose();
+            }
+            if (postMaterial) {
+                postMaterial.dispose();
+            }
+            if (postPlane) {
+                postPlane.dispose();
+            }
         }
-
-        return base64;
     }
 }
