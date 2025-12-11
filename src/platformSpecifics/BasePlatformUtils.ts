@@ -1,5 +1,5 @@
 import { Texture } from "three"
-import { Canvas } from "canvas"
+import type { Canvas } from "canvas"
 
 export interface Canvas3d { // the bare minimum to count as a canvas
     width: number
@@ -33,4 +33,6 @@ export abstract class BasePlatformUtils {
     abstract createTexture(url: string | HTMLCanvasElement | Canvas): Promise<Texture>
 
     abstract urlToCanvas(url: string): Promise<Canvas | HTMLCanvasElement>
+
+    abstract screenshot(buffer: Uint8Array, width: number, height: number, type: "png" | "jpeg"): Promise<string>
 }

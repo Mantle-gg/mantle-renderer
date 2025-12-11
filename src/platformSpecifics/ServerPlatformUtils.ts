@@ -2,8 +2,14 @@ import type GL from "gl";
 import { Platform, BasePlatformUtils } from "./BasePlatformUtils.js";
 import type Canvas from "canvas";
 import { CanvasTexture } from "three";
+import type Sharp from "sharp";
 
 export class ServerPlatformUtils extends BasePlatformUtils {
+    private createSharp: ((options?: Sharp.SharpOptions) => Sharp.Sharp) | ((
+        input?: Sharp.SharpInput | Array<Sharp.SharpInput>,
+        options?: Sharp.SharpOptions,
+    ) => Sharp.Sharp) | null = null;
+
     constructor(
         private readonly gl: typeof GL,
         private readonly canvas: typeof Canvas
@@ -58,5 +64,16 @@ export class ServerPlatformUtils extends BasePlatformUtils {
 
             image.src = url;
         });
+    }
+
+    async screenshot(buffer: Uint8Array, width: number, height: number, type: "png" | "jpeg"): Promise<string> {
+        if (!this.createSharp) {
+            this.createSharp = (await import("sharp")).default;
+        }
+        const img = this.createSharp(buffer, { raw: { width, height, channels: 4 } }).flip();
+        
+        const output = type === "jpeg" ? img.jpeg() : img.png();
+        const buf = await output.toBuffer();
+        return `data:image/${type};base64,` + buf.toString("base64");
     }
 }

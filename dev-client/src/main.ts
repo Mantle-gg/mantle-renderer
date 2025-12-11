@@ -86,7 +86,13 @@ document.querySelector("#remove-models")?.addEventListener("click", () => {
     }
 });
 document.querySelector("#midnight-cape")?.addEventListener("click", () => renderer.getPlayer().getCloak().setTexture("https://mantle-assets.com/cape/ld4i5.png?" + Date.now()));
-document.querySelector("#screenshot")?.addEventListener("click", () => console.log(renderer.screenshot(1000, 1000, "png", 5)));
+document.querySelector("#screenshot")?.addEventListener("click", async () => {
+    const start = Date.now();
+    const screenshot = await renderer.screenshot(renderer.getCamera(), 1000, 1000, "png", 5);
+    const duration = Date.now() - start;
+    console.log(`Rendered screenshot in ${duration}ms`);
+    console.log(screenshot);
+});
 
 document.querySelector("#shadows-cast")?.addEventListener("click", () => renderer.getPlayer(true)?.setShadowOptions(!renderer.getPlayer().getShadowOptions().cast, renderer.getPlayer().getShadowOptions().receive));
 document.querySelector("#shadows-receive")?.addEventListener("click", () => renderer.getPlayer(true)?.setShadowOptions(renderer.getPlayer().getShadowOptions().cast, !renderer.getPlayer().getShadowOptions().receive));

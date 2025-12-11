@@ -53,4 +53,22 @@ export class ClientPlatformUtils extends BasePlatformUtils {
             image.src = url;
         });
     }
+
+    async screenshot(buffer: Uint8Array, width: number, height: number, type: "png" | "jpeg"): Promise<string> {
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if(!ctx) throw new Error("No 2D context");
+
+        const imageData = new ImageData(new Uint8ClampedArray(buffer), width, height);
+        
+        const bitmap = await createImageBitmap(imageData);
+        
+        ctx.translate(0, height);
+        ctx.scale(1, -1);
+        ctx.drawImage(bitmap, 0, 0);
+        
+        return canvas.toDataURL(`image/${type}`);
+    }
 }

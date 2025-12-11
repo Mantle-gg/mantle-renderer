@@ -1,4 +1,4 @@
-import { AmbientLight, FloatType, LinearFilter, LinearMipMapLinearFilter, Mesh, NoToneMapping, Object3D, OrthographicCamera, PCFSoftShadowMap, PerspectiveCamera, PlaneGeometry, PointLight, RGBAFormat, SRGBColorSpace, Scene, ShaderMaterial, UnsignedByteType, Vector2, WebGLRenderTarget, WebGLRenderer } from "three";
+import { AmbientLight, Camera, FloatType, LinearFilter, LinearMipMapLinearFilter, Mesh, NoToneMapping, Object3D, OrthographicCamera, PCFSoftShadowMap, PerspectiveCamera, PlaneGeometry, PointLight, RGBAFormat, SRGBColorSpace, Scene, ShaderMaterial, UnsignedByteType, Vector2, WebGLRenderTarget, WebGLRenderer } from "three";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
@@ -13,7 +13,6 @@ import { PlayerModel } from "./model/PlayerModel.js";
 import { DisposableObject } from "./interface/DisposableObject.js";
 import { BasePlatformUtils} from "./platformSpecifics/BasePlatformUtils.js";
 import { Platform } from "./platformSpecifics/BasePlatformUtils.js";
-import { Canvas } from "canvas";
 
 export type EventType = "resize" | "prerender" | "postrender";
 
@@ -32,11 +31,39 @@ export class MantleRenderer {
     private renderTime = 0;
     private disposableObjects: DisposableObject[] = [];
 
+    private readonly copyScene: THREE.Scene;
+    private readonly copyCamera: THREE.OrthographicCamera;
+    private readonly copyMaterial: THREE.ShaderMaterial;
+
     public constructor(options: RendererOptions) {
         this.scene = new Scene();
         this.platformUtils = options.platformUtils;
 
         const canvas = options.canvas || this.platformUtils.create3dCanvas(500, 500);
+
+        // screenshot utils
+        this.copyScene = new Scene();
+        this.copyCamera = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
+        this.copyMaterial = new ShaderMaterial({
+            uniforms: { tDiffuse: { value: null } },
+            vertexShader: `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    gl_Position = vec4(position, 1.0);
+                }`,
+            fragmentShader: `
+                uniform sampler2D tDiffuse;
+                varying vec2 vUv;
+                void main() {
+                    // Texture read automatically handles linear interpolation (downsampling)
+                    gl_FragColor = texture2D(tDiffuse, vUv); 
+                }`
+        });
+        const plane = new PlaneGeometry(2, 2);
+        const quad = new Mesh(plane, this.copyMaterial);
+        quad.frustumCulled = false;
+        this.copyScene.add(quad);
 
         // renderer
         this.renderer = new WebGLRenderer({
@@ -287,121 +314,164 @@ export class MantleRenderer {
         return this.camera;
     }
 
-    public screenshot(width: number, height: number, mimeType: "png" | "jpeg", superSampling?: number) {
+    public async screenshot(camera: Camera, width: number, height: number, mimeType: "png" | "jpeg", superSampling = 1): Promise<string> {
+        const ssWidth = width * superSampling;
+        const ssHeight = height * superSampling;
 
-        const isPowerOfTwo = (n: number) => n > 0 && (n & (n - 1)) === 0;
-    
-        superSampling = Math.max(Math.round(superSampling || 1), 1);
-        
-        if (superSampling > 1 && (!isPowerOfTwo(superSampling) || !isPowerOfTwo(width) || !isPowerOfTwo(height))) {
-            throw new Error("With WebGL 1, super-sampling is only supported when SS factor and resolution are powers of two.");
-        }
-    
-        const superSampledWidth = width * superSampling;
-        const superSampledHeight = height * superSampling;
-        const cameraAspect = this.camera.aspect;
-    
-        let renderer: WebGLRenderer | null = null;
-        let sceneRenderTarget: WebGLRenderTarget | null = null;
-        let finalRenderTarget: WebGLRenderTarget | null = null;
-        let postMaterial: ShaderMaterial | null = null;
-        let postPlane: PlaneGeometry | null = null;
-        let canvas2d: any = null;
-    
-        try {
-            const postCamera = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
-            postMaterial = new ShaderMaterial({
-                uniforms: { tDiffuse: { value: null } },
-                vertexShader: `
-                    varying vec2 vUv;
-                    void main() {
-                        vUv = uv;
-                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-                    }
-                `,
-                fragmentShader: `
-                    varying vec2 vUv;
-                    uniform sampler2D tDiffuse;
-                    void main() {
-                        gl_FragColor = texture2D(tDiffuse, vec2(vUv.x, 1.0 - vUv.y));
-                    }
-                `
-            });
-            postPlane = new PlaneGeometry(2, 2);
-            const postQuad = new Mesh(postPlane, postMaterial);
-            const postScene = new Scene();
-            postScene.add(postQuad);
-    
-            this.camera.aspect = superSampledWidth / superSampledHeight;
-            this.camera.updateProjectionMatrix();
-    
-            const canvas = this.platformUtils.create3dCanvas(superSampledWidth, superSampledHeight);
-            renderer = new WebGLRenderer({
-                canvas: canvas as unknown as HTMLCanvasElement,
-                alpha: true,
-                powerPreference: "high-performance",
-                antialias: true,
-                context: canvas.getContext("3d")
-            });
-            renderer.shadowMap.enabled = true;
-            renderer.shadowMap.type = PCFSoftShadowMap;
-    
-            sceneRenderTarget = new WebGLRenderTarget(superSampledWidth, superSampledHeight, {
-                minFilter: LinearMipMapLinearFilter,
-                magFilter: LinearFilter,
-                format: RGBAFormat,
-                type: UnsignedByteType,
-            });
-            sceneRenderTarget.texture.generateMipmaps = true;
-    
-            finalRenderTarget = new WebGLRenderTarget(width, height, {
-                minFilter: LinearFilter,
-                magFilter: LinearFilter,
-                format: RGBAFormat,
-                type: UnsignedByteType
-            });
-    
-            renderer.setRenderTarget(sceneRenderTarget);
-            renderer.render(this.scene, this.camera);
+        const superTarget = new WebGLRenderTarget(ssWidth, ssHeight, {
+            minFilter: LinearFilter,
+            magFilter: LinearFilter,
+            type: UnsignedByteType,
+            format: RGBAFormat,
+        });
 
-            postMaterial.uniforms.tDiffuse.value = sceneRenderTarget.texture;
-            renderer.setRenderTarget(finalRenderTarget);
-            renderer.render(postScene, postCamera);
-    
-            const finalPixels = new Uint8Array(width * height * 4);
-            renderer.readRenderTargetPixels(finalRenderTarget, 0, 0, width, height, finalPixels);
-    
-            canvas2d = this.platformUtils.create2dCanvas(width, height) as any;
-            const ctx = canvas2d.getContext("2d");
-            const imageData = ctx.createImageData(width, height);
-    
-            imageData.data.set(finalPixels);
-            ctx.putImageData(imageData, 0, 0);
-    
-            const base64 = canvas2d.toDataURL("image/" + mimeType) as string;
-            return base64;
-    
-        } finally {
-            this.camera.aspect = cameraAspect;
-            this.camera.updateProjectionMatrix();
-    
-            if (renderer) {
-                try {
-                    renderer.dispose();
-                } catch {}
-            }
-            if (sceneRenderTarget) {
-                sceneRenderTarget.dispose();
-            }
-            if (finalRenderTarget) {
-                finalRenderTarget.dispose();
-            }
-            if (postMaterial) {
-                postMaterial.dispose();
-            }
-            if (postPlane) {
-                postPlane.dispose();
-            }
-        }
+        const finalTarget = new WebGLRenderTarget(width, height, {
+            minFilter: LinearFilter,
+            magFilter: LinearFilter,
+            type: UnsignedByteType,
+            format: RGBAFormat,
+        });
+
+        const originalAspect = (camera as any).aspect;
+        (camera as any).aspect = ssWidth / ssHeight;
+        (camera as any).updateProjectionMatrix();
+
+        this.renderer.setRenderTarget(superTarget);
+        this.renderer.clear();
+        this.renderer.render(this.scene, camera);
+
+        this.copyMaterial.uniforms.tDiffuse.value = superTarget.texture;
+        this.renderer.setRenderTarget(finalTarget);
+        this.renderer.render(this.copyScene, this.copyCamera);
+
+        const buffer = new Uint8Array(width * height * 4);
+        this.renderer.readRenderTargetPixels(finalTarget, 0, 0, width, height, buffer);
+
+        superTarget.dispose();
+        finalTarget.dispose();
+        (camera as any).aspect = originalAspect;
+        (camera as any).updateProjectionMatrix();
+
+        return await this.platformUtils.screenshot(buffer, width, height, mimeType);
     }
+
+
+
+    // public screenshot(width: number, height: number, mimeType: "png" | "jpeg", superSampling?: number) {
+
+    //     const isPowerOfTwo = (n: number) => n > 0 && (n & (n - 1)) === 0;
+    
+    //     superSampling = Math.max(Math.round(superSampling || 1), 1);
+        
+    //     if (superSampling > 1 && (!isPowerOfTwo(superSampling) || !isPowerOfTwo(width) || !isPowerOfTwo(height))) {
+    //         throw new Error("With WebGL 1, super-sampling is only supported when SS factor and resolution are powers of two.");
+    //     }
+    
+    //     const superSampledWidth = width * superSampling;
+    //     const superSampledHeight = height * superSampling;
+    //     const cameraAspect = this.camera.aspect;
+    
+    //     let renderer: WebGLRenderer | null = null;
+    //     let sceneRenderTarget: WebGLRenderTarget | null = null;
+    //     let finalRenderTarget: WebGLRenderTarget | null = null;
+    //     let postMaterial: ShaderMaterial | null = null;
+    //     let postPlane: PlaneGeometry | null = null;
+    //     let canvas2d: any = null;
+    
+    //     try {
+    //         const postCamera = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    //         postMaterial = new ShaderMaterial({
+    //             uniforms: { tDiffuse: { value: null } },
+    //             vertexShader: `
+    //                 varying vec2 vUv;
+    //                 void main() {
+    //                     vUv = uv;
+    //                     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    //                 }
+    //             `,
+    //             fragmentShader: `
+    //                 varying vec2 vUv;
+    //                 uniform sampler2D tDiffuse;
+    //                 void main() {
+    //                     gl_FragColor = texture2D(tDiffuse, vec2(vUv.x, 1.0 - vUv.y));
+    //                 }
+    //             `
+    //         });
+    //         postPlane = new PlaneGeometry(2, 2);
+    //         const postQuad = new Mesh(postPlane, postMaterial);
+    //         const postScene = new Scene();
+    //         postScene.add(postQuad);
+    
+    //         this.camera.aspect = superSampledWidth / superSampledHeight;
+    //         this.camera.updateProjectionMatrix();
+    
+    //         const canvas = this.platformUtils.create3dCanvas(superSampledWidth, superSampledHeight);
+    //         renderer = new WebGLRenderer({
+    //             canvas: canvas as unknown as HTMLCanvasElement,
+    //             alpha: true,
+    //             powerPreference: "high-performance",
+    //             antialias: true,
+    //             context: canvas.getContext("3d")
+    //         });
+    //         renderer.shadowMap.enabled = true;
+    //         renderer.shadowMap.type = PCFSoftShadowMap;
+    
+    //         sceneRenderTarget = new WebGLRenderTarget(superSampledWidth, superSampledHeight, {
+    //             minFilter: LinearMipMapLinearFilter,
+    //             magFilter: LinearFilter,
+    //             format: RGBAFormat,
+    //             type: UnsignedByteType,
+    //         });
+    //         sceneRenderTarget.texture.generateMipmaps = true;
+    
+    //         finalRenderTarget = new WebGLRenderTarget(width, height, {
+    //             minFilter: LinearFilter,
+    //             magFilter: LinearFilter,
+    //             format: RGBAFormat,
+    //             type: UnsignedByteType
+    //         });
+    
+    //         renderer.setRenderTarget(sceneRenderTarget);
+    //         renderer.render(this.scene, this.camera);
+
+    //         postMaterial.uniforms.tDiffuse.value = sceneRenderTarget.texture;
+    //         renderer.setRenderTarget(finalRenderTarget);
+    //         renderer.render(postScene, postCamera);
+    
+    //         const finalPixels = new Uint8Array(width * height * 4);
+    //         renderer.readRenderTargetPixels(finalRenderTarget, 0, 0, width, height, finalPixels);
+    
+    //         canvas2d = this.platformUtils.create2dCanvas(width, height) as any;
+    //         const ctx = canvas2d.getContext("2d");
+    //         const imageData = ctx.createImageData(width, height);
+    
+    //         imageData.data.set(finalPixels);
+    //         ctx.putImageData(imageData, 0, 0);
+    
+    //         const base64 = canvas2d.toDataURL("image/" + mimeType) as string;
+    //         return base64;
+    
+    //     } finally {
+    //         this.camera.aspect = cameraAspect;
+    //         this.camera.updateProjectionMatrix();
+    
+    //         if (renderer) {
+    //             try {
+    //                 renderer.dispose();
+    //             } catch {}
+    //         }
+    //         if (sceneRenderTarget) {
+    //             sceneRenderTarget.dispose();
+    //         }
+    //         if (finalRenderTarget) {
+    //             finalRenderTarget.dispose();
+    //         }
+    //         if (postMaterial) {
+    //             postMaterial.dispose();
+    //         }
+    //         if (postPlane) {
+    //             postPlane.dispose();
+    //         }
+    //     }
+    // }
 }
